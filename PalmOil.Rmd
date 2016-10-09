@@ -1,0 +1,101 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+
+We haven't taken out cloud data.
+
+
+
+```{r}
+packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071")
+
+#This piece of code will check to see if the packages you want to load are installed if they aren't it will install them
+new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+invisible(sapply(packages, library, character.only = TRUE))
+
+#save the starting directory as a variable
+basewd <-getwd()
+
+select <-dplyr::select
+
+setwd("~/Dropbox/PalmOil")
+```
+
+
+untar data
+```{r}
+setwd("~/Dropbox/PalmOil/Tiff")
+untar("LC81190622016273LGN00.tar.gz", "unzipped.tif")
+test <- untar("LC81190622016273LGN00.tar.gz")
+
+list.files()
+img <- raster("LC81190622016273LGN00.TIF")
+
+
+GDALinfo(system.file("LC81190622016273LGN00.TIF", package="sp")[1])
+
+```
+
+
+
+ImportBrick
+```{r}
+img <- brick("FakeForest1.tif")
+
+plot(img)
+
+
+trainData <- shapefile("FakeFores1_shape.shp")
+
+responseCol <- "Class"
+
+
+```
+
+
+```{r}
+
+# dfAll = data.frame(matrix(vector(), nrow = 0, ncol = length(names(img)) + 1))   
+#  for (i in 1:length(unique(trainData[[responseCol]]))){                          
+#   category <- unique(trainData[[responseCol]])[i]
+#   categorymap <- trainData[trainData[[responseCol]] == category,]
+#   dataSet <- raster::extract(img, categorymap)
+#   dataSet <- lapply(dataSet, function(x){cbind(x, Class = as.numeric(rep(category, nrow(x))))})
+# #  df <- do.call("rbind", dataSet)
+#  # dfAll <- rbind(dfAll, df)
+#  }
+
+```
+
+
+
+```{r}
+TiffFrame <- lapply(1:length(unique(trainData[[responseCol]])), function(i){    
+          category <- unique(trainData[[responseCol]])[i]
+          categorymap <- trainData[trainData[[responseCol]] == category,]
+          dataSet <- extract(img, trainData[trainData[[responseCol]] == category,] )
+          dataSet <- lapply(dataSet, as.data.frame) %>% bind_rows %>% mutate( Class = category)
+          }) %>% bind_rows()
+
+set.seed(1987)
+ trainvect<- sample(1:nrow(TiffFrame), 0.8*nrow(TiffFrame))
+
+ Tiffmat<-as.matrix(select(TiffFrame, -Class))
+Mod1 <- xgboost(Tiffmat[trainvect,],
+        label = TiffFrame$Class[trainvect]=="Forest",
+        max.depth=5, 
+                    eta=0.10,
+                    nround = 100, 
+                    objective = "binary:logistic")
+
+
+Preds1 <- predict(Mod1, Tiffmat[-trainvect,])
+confusionMatrix(Preds1>0.5, TiffFrame$Class[-trainvect]=="Forest")
+
+
+```
+
