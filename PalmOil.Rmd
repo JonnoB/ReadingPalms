@@ -4,12 +4,26 @@ output: html_document
 ---
 
 
-We haven't taken out cloud data.
+. Load in all the layers
+. Subset data
+. Represent as vector
+. bind vectors of each layer into single frame of multiple features
+. Train on outcome
+
+. Classify for whole image
+. Overalay shape files
+. Classify areas as conflict or not.
+. Calculate local percentage conflict and local tonnage.
+
+Additional Ideas
+. Likely owner
+. Expansion Risk
+. Time of expansion
 
 
 
 ```{r}
-packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071")
+packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071", "snow")
 
 #This piece of code will check to see if the packages you want to load are installed if they aren't it will install them
 new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
@@ -22,36 +36,66 @@ basewd <-getwd()
 
 select <-dplyr::select
 
-setwd("~/Dropbox/PalmOil")
+mode<-"cloud"
+
+if(mode == "cloud"){
+  palmbase <-"~/Dropbox/PalmOil"
+  TIFF <- "~/Dropbox/PalmOil/Tiff"
+  forestshapefile <- "~/Dropbox/PalmOil/ForestShape"
+} else {
+  palmbase <-"~/Dropbox/PalmOil"
+  TIFF <- "C:/Users/Gail/Desktop/TiffTest"
+  }
+
+setwd(palmbase)
+```
+
+
+```{r}
+CreateTiffFrame <- function(img, trainData, responseCol){
+ #This function outputs a data frame with a column for the pixel data and a column for the output variable, for a stacked raster it will include a column for each band
+  
+TiffFrame <- lapply(1:length(unique(trainData[[responseCol]])), function(i){    
+          category <- unique(trainData[[responseCol]])[i]
+          categorymap <- trainData[trainData[[responseCol]] == category,]
+          dataSet <- extract(img, trainData[trainData[[responseCol]] == category,] )
+          dataSet <- lapply(dataSet, as.data.frame) %>% bind_rows %>% mutate( Class = category)
+          }) %>% bind_rows()
+}
 ```
 
 
 untar data
 ```{r}
-setwd("~/Dropbox/PalmOil/Tiff")
-untar("LC81190622016273LGN00.tar.gz", "unzipped.tif")
-test <- untar("LC81190622016273LGN00.tar.gz")
+setwd(TIFF)
+# untar("LC81190622016273LGN00.tar.gz", "unzipped.tif")
+# test <- untar("LC81190622016273LGN00.tar.gz")
 
-list.files()
-img <- raster("LC81190622016273LGN00.TIF")
+#all above band 7 is corrupted or something, band bQA is nothing 
+files <- list.files(pattern =".TIF")[-11]
 
+#finds the correct bands and orders them correctly
+filewant <- files %>% sub("LC81190622016273LGN00_B", "", .) %>% 
+  sub(".TIF", "", .) %>% as.numeric %>% base::match(2:7, .)
 
-GDALinfo(system.file("LC81190622016273LGN00.TIF", package="sp")[1])
-
+LSI<- lapply(files[filewant], brick)%>% stack
 ```
 
 
 
 ImportBrick
 ```{r}
+
+plotRGB(LSI,r=3,g=2,b=1, scale=800, stretch = "Lin")
+
 img <- brick("FakeForest1.tif")
 
 plot(img)
+setwd(forestshapefile)
 
+trainData <- shapefile("ForestLC8119.shp")
+#trainData <- shapefile("FakeFores1_shape.shp")
 
-trainData <- shapefile("FakeFores1_shape.shp")
-
-responseCol <- "Class"
 
 
 ```
@@ -74,19 +118,16 @@ responseCol <- "Class"
 
 
 ```{r}
-TiffFrame <- lapply(1:length(unique(trainData[[responseCol]])), function(i){    
-          category <- unique(trainData[[responseCol]])[i]
-          categorymap <- trainData[trainData[[responseCol]] == category,]
-          dataSet <- extract(img, trainData[trainData[[responseCol]] == category,] )
-          dataSet <- lapply(dataSet, as.data.frame) %>% bind_rows %>% mutate( Class = category)
-          }) %>% bind_rows()
+
+TiffFrame <- CreateTiffFrame(LSI, trainData, "Class") %>%
+  setNames(sub(".+_", "", names(.))) 
 
 set.seed(1987)
  trainvect<- sample(1:nrow(TiffFrame), 0.8*nrow(TiffFrame))
 
  Tiffmat<-as.matrix(select(TiffFrame, -Class))
 Mod1 <- xgboost(Tiffmat[trainvect,],
-        label = TiffFrame$Class[trainvect]=="Forest",
+        label = TiffFrame$Class[trainvect]=="Plantation",
         max.depth=5, 
                     eta=0.10,
                     nround = 100, 
@@ -94,8 +135,28 @@ Mod1 <- xgboost(Tiffmat[trainvect,],
 
 
 Preds1 <- predict(Mod1, Tiffmat[-trainvect,])
-confusionMatrix(Preds1>0.5, TiffFrame$Class[-trainvect]=="Forest")
+confusionMatrix(Preds1>0.5, TiffFrame$Class[-trainvect]=="Plantation")
+
+importance <- xgb.importance(feature_names = colnames(Tiffmat), model = Mod1)
+barplot(importance$Gain)
+```
 
 
+
+```{r}
+
+test <- as.matrix(LSI) 
+colnames(test) <- sub(".+_", "", colnames(test))
+
+LSI2 <-LSI
+names(LSI2) <- sub(".+_", "", names(LSI2))
+  
+beginCluster()
+ preds_rf <- clusterR(LSI, raster::predict, args = list(model = Mod1))
+ endCluster()
+ 
+test2 <- sapply(test, as.numeric)
+ 
+ preds <- predict(Mod1, head(test, 1000))
 ```
 
