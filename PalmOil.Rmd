@@ -20,6 +20,13 @@ Additional Ideas
 . Expansion Risk
 . Time of expansion
 
+##Useful websites for feature engineering
+http://landsat.usgs.gov/band_designations_landsat_satellites.php
+
+http://www.harrisgeospatial.com/Learn/WhitepapersDetail/TabId/802/ArtMID/2627/ArticleID/13742/Vegetation-Analysis-Using-Vegetation-Indices-in-ENVI.aspx
+
+http://web.pdx.edu/~emch/ip1/bandcombinations.html
+
 
 
 ```{r}
@@ -108,27 +115,41 @@ plot(trainData)
 
 TiffFrame <- CreateTiffFrame(LSI, trainData, "Class")
 
+TiffFrame <-TiffFrame %>% mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
+                                  ForCrop1 = B3/B2,
+                                  ForCrop2 = B7/B2,
+                                  WatLan1 = B6/B7,
+                                  WatLan2= (B4+B5)/(B6*2))
 
 Classdf <- data.frame(Class = TiffFrame$Class) %>% 
   mutate(ClassNum =  Class %>% 
            as.factor %>% 
-           as.numeric)
+           as.numeric -1) #Classes have to start at 0
+
+unique(Classdf)
 
 set.seed(1987)
  trainvect<- sample(1:nrow(TiffFrame), 0.8*nrow(TiffFrame))
 
  Tiffmat<-as.matrix(select(TiffFrame, -Class))
-Mod1 <- xgboost(Tiffmat[trainvect,],
-        label = Classdf$ClassNum,
-        max.depth=5,
+
+ Mod1 <- xgboost(Tiffmat[trainvect,],
+        label = Classdf$ClassNum[trainvect],
+                    max.depth=6,
                     eta = 0.10,
-                    nround = 100,
+                    nround = 200,
                     objective = "multi:softmax",
                     num_class = 5,
-                    eval_metric ="merror")
+                    eval_metric ="merror",
+                    missing="NAN")
 
- 
- 
+
+Preds1 <- predict(Mod1, Tiffmat[-trainvect,], missing="NAN")
+confusionMatrix(Preds1, Classdf$ClassNum[-trainvect])
+
+#save model as it takes a long time to build
+setwd(palmbase)
+saveRDS(Mod1, "Mod1.rds") 
  
 #  Tiffmat<-as.matrix(select(TiffFrame, -Class))
 # Mod1 <- xgboost(Tiffmat[trainvect,],
@@ -137,10 +158,11 @@ Mod1 <- xgboost(Tiffmat[trainvect,],
 #                     eta=0.10,
 #                     nround = 100, 
 #                     objective = "binary:logistic")
+# 
+# 
+# Preds1 <- predict(Mod1, Tiffmat[-trainvect,])
+# confusionMatrix(Preds1>0.5, TiffFrame$Class[-trainvect]=="Plantation")
 
-
-Preds1 <- predict(Mod1, Tiffmat[-trainvect,])
-confusionMatrix(Preds1>0.5, TiffFrame$Class[-trainvect]=="Plantation")
 
 importance <- xgb.importance(feature_names = colnames(Tiffmat), model = Mod1)
 barplot(importance$Gain)
@@ -150,10 +172,17 @@ barplot(importance$Gain)
 
 ```{r}
 
+#Convert entire image
+imgmat <-as.data.frame(LSI) %>% mutate_all(as.numeric) %>% 
+  mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
+      ForCrop1 = B3/B2,
+      ForCrop2 = B7/B2,
+      WatLan1 = B6/B7,
+      WatLan2= (B4+B5)/(B6*2)) %>% 
+  as.matrix()
+
 #predict class of whole image
-imgmat <-as.data.frame(LSI) %>% mutate_all(as.numeric) %>% as.matrix()
-colnames(imgmat) <- sub(".+_", "", colnames(imgmat))
-preds <- predict(Mod1, imgmat)
+preds <- predict(Mod1, imgmat, missing = "NAN")
 
 
 #Change the prediction vector back into a raster image.
