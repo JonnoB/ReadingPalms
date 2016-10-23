@@ -30,7 +30,7 @@ http://web.pdx.edu/~emch/ip1/bandcombinations.html
 
 
 ```{r}
-packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071", "snow")
+packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071", "snow", "RColorBrewer")
 
 #This piece of code will check to see if the packages you want to load are installed if they aren't it will install them
 new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
@@ -75,8 +75,6 @@ TiffFrame <- lapply(1:length(unique(trainData[[responseCol]])), function(i){
 untar data
 ```{r}
 setwd(TIFF)
-# untar("LC81190622016273LGN00.tar.gz", "unzipped.tif")
-# test <- untar("LC81190622016273LGN00.tar.gz")
 
 #all above band 7 is corrupted or something, band bQA is nothing 
 files <- list.files(pattern =".TIF")
@@ -126,7 +124,7 @@ Classdf <- data.frame(Class = TiffFrame$Class) %>%
            as.factor %>% 
            as.numeric -1) #Classes have to start at 0
 
-unique(Classdf)
+ClassCodes <- unique(Classdf)
 
 set.seed(1987)
  trainvect<- sample(1:nrow(TiffFrame), 0.8*nrow(TiffFrame))
@@ -149,6 +147,7 @@ confusionMatrix(Preds1, Classdf$ClassNum[-trainvect])
 
 #save model as it takes a long time to build
 setwd(palmbase)
+#Mod1 <- readRDS("Mod1.rds")
 saveRDS(Mod1, "Mod1.rds") 
  
 #  Tiffmat<-as.matrix(select(TiffFrame, -Class))
@@ -190,7 +189,48 @@ predmat <- matrix(preds, nrow= 7771, byrow = TRUE) #>0.5
 predrast <- raster(predmat)
 extent(predrast) <- extent(LSI)
 
-plot(predrast)
+
+
+plot(predrast, breaks = c(-1,0,1,2,3,4), col = c("white", "black","forestgreen", "green", "blue") )
+
+```
+
+
+extract  useful stats from the matrix
+
+. 1 pixel is equivalent to 0.009 hectares of land
+. 1 hectare of land can produce 3.69 tonnes per hectare.
+. 1km^2 is equal to 100 hactares
+```{r}
+px <- sapply(0:4, function(n) sum(predmat ==n))
+
+imagedata <- ClassCodes %>% arrange(ClassNum) %>% mutate(pixels = px, km2 = round(pixels * 9e-5))
+imagedata
+
+#Tonnes of Palm Oil Equivalent
+
+TonnesOil<- imagedata$km2[imagedata$Class== "Plantation"] * 3.69*100
+#value of oil in USD
+
+TonnesOil*692/1e6
+
+```
+
+
+```{r}
+setwd(file.path(palmbase, "DummyLegal"))
+
+Legalshape <- shapefile("DummyLegal.shp")
+test <- as.matrix(Legalshape)
+
+plot(Legalshape)
+
+
+dataSet <- extract(predrast, Legalshape ) %>% lapply(., as.data.frame) %>% bind_rows
+
+LegalProd <- ClassCodes %>% arrange(ClassNum) %>% 
+  mutate(pixels = sapply(0:4, function(n) sum(dataSet ==n)), 
+         km2 = round(pixels * 9e-5))
 
 ```
 
