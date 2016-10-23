@@ -72,13 +72,14 @@ setwd(TIFF)
 # test <- untar("LC81190622016273LGN00.tar.gz")
 
 #all above band 7 is corrupted or something, band bQA is nothing 
-files <- list.files(pattern =".TIF")[-11]
+files <- list.files(pattern =".TIF")
 
 #finds the correct bands and orders them correctly
 filewant <- files %>% sub("LC81190622016273LGN00_B", "", .) %>% 
-  sub(".TIF", "", .) %>% as.numeric %>% base::match(2:7, .)
+  sub(".TIF", "", .) %>% as.numeric %>% base::match(1:7, .)
 
-LSI<- lapply(files[filewant], brick)%>% stack
+LSI<- lapply(files[filewant], brick)%>% stack  %>%
+  setNames(sub(".+_", "", names(.))) 
 ```
 
 
@@ -86,52 +87,56 @@ LSI<- lapply(files[filewant], brick)%>% stack
 ImportBrick
 ```{r}
 
-plotRGB(LSI,r=3,g=2,b=1, scale=800, stretch = "Lin")
+plotRGB(LSI,r=4,g=3,b=2, scale=800, stretch = "Lin")
 
-img <- brick("FakeForest1.tif")
+#img <- brick("FakeForest1.tif")
 
 plot(img)
-setwd(forestshapefile)
 
+setwd(forestshapefile)
 trainData <- shapefile("ForestLC8119.shp")
 #trainData <- shapefile("FakeFores1_shape.shp")
 
+#Dropbox wasn't updating in AWS so I had to manually filter out this NA
+trainData <- subset(trainData, trainData$Class %in% unique(trainData$Class)[-6])
 
 
+plot(trainData)
 ```
-
 
 ```{r}
 
-# dfAll = data.frame(matrix(vector(), nrow = 0, ncol = length(names(img)) + 1))   
-#  for (i in 1:length(unique(trainData[[responseCol]]))){                          
-#   category <- unique(trainData[[responseCol]])[i]
-#   categorymap <- trainData[trainData[[responseCol]] == category,]
-#   dataSet <- raster::extract(img, categorymap)
-#   dataSet <- lapply(dataSet, function(x){cbind(x, Class = as.numeric(rep(category, nrow(x))))})
-# #  df <- do.call("rbind", dataSet)
-#  # dfAll <- rbind(dfAll, df)
-#  }
-
-```
+TiffFrame <- CreateTiffFrame(LSI, trainData, "Class")
 
 
-
-```{r}
-
-TiffFrame <- CreateTiffFrame(LSI, trainData, "Class") %>%
-  setNames(sub(".+_", "", names(.))) 
+Classdf <- data.frame(Class = TiffFrame$Class) %>% 
+  mutate(ClassNum =  Class %>% 
+           as.factor %>% 
+           as.numeric)
 
 set.seed(1987)
  trainvect<- sample(1:nrow(TiffFrame), 0.8*nrow(TiffFrame))
 
  Tiffmat<-as.matrix(select(TiffFrame, -Class))
 Mod1 <- xgboost(Tiffmat[trainvect,],
-        label = TiffFrame$Class[trainvect]=="Plantation",
-        max.depth=5, 
-                    eta=0.10,
-                    nround = 100, 
-                    objective = "binary:logistic")
+        label = Classdf$ClassNum,
+        max.depth=5,
+                    eta = 0.10,
+                    nround = 100,
+                    objective = "multi:softmax",
+                    num_class = 5,
+                    eval_metric ="merror")
+
+ 
+ 
+ 
+#  Tiffmat<-as.matrix(select(TiffFrame, -Class))
+# Mod1 <- xgboost(Tiffmat[trainvect,],
+#         label = TiffFrame$Class[trainvect]=="Plantation",
+#         max.depth=5, 
+#                     eta=0.10,
+#                     nround = 100, 
+#                     objective = "binary:logistic")
 
 
 Preds1 <- predict(Mod1, Tiffmat[-trainvect,])
@@ -145,18 +150,18 @@ barplot(importance$Gain)
 
 ```{r}
 
-test <- as.matrix(LSI) 
-colnames(test) <- sub(".+_", "", colnames(test))
+#predict class of whole image
+imgmat <-as.data.frame(LSI) %>% mutate_all(as.numeric) %>% as.matrix()
+colnames(imgmat) <- sub(".+_", "", colnames(imgmat))
+preds <- predict(Mod1, imgmat)
 
-LSI2 <-LSI
-names(LSI2) <- sub(".+_", "", names(LSI2))
-  
-beginCluster()
- preds_rf <- clusterR(LSI, raster::predict, args = list(model = Mod1))
- endCluster()
- 
-test2 <- sapply(test, as.numeric)
- 
- preds <- predict(Mod1, head(test, 1000))
+
+#Change the prediction vector back into a raster image.
+predmat <- matrix(preds, nrow= 7771, byrow = TRUE) #>0.5
+predrast <- raster(predmat)
+extent(predrast) <- extent(LSI)
+
+plot(predrast)
+
 ```
 
