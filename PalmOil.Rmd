@@ -96,8 +96,6 @@ plotRGB(LSI,r=4,g=3,b=2, scale=800, stretch = "Lin")
 
 #img <- brick("FakeForest1.tif")
 
-plot(img)
-
 setwd(forestshapefile)
 trainData <- shapefile("ForestLC8119.shp")
 #trainData <- shapefile("FakeFores1_shape.shp")
@@ -107,6 +105,7 @@ trainData <- shapefile("ForestLC8119.shp")
 
 
 plot(trainData)
+
 ```
 
 ```{r}
@@ -198,6 +197,22 @@ extent(predrast) <- extent(LSI)
 
 
 plot(predrast, breaks = c(-1,0,1,2,3,4), col = c("white", "black","forestgreen", "green", "blue") )
+df<- rasterToPoints(predrast)
+df <- data.frame(df)
+names(df)<- c("Longitude", "Latitude", "Type")
+
+ggplot(df, aes(y=Latitude, x=Longitude, fill=Type)) +
+geom_raster()
++theme_bw() +
+coord_equal() +theme(axis.title.x = element_text(size=16),
+axis.title.y = element_text(size=16, angle=90),
+axis.text.x = element_text(size=14),
+axis.text.y = element_text(size=14),
+panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(),
+legend.position = "right",
+legend.key = element_blank()
+)
 
 ```
 
@@ -240,6 +255,17 @@ LegalProd <- ClassCodes %>% arrange(ClassNum) %>%
 
 names(Legalshape)[2] <- "Class"
 test <- CreateTiffFrame(predrast, Legalshape, "LP")
+
+```
+
+
+Alternative Method of working out what is legal and what isn't
+
+```{r}
+
+
+Preds1 <- predict(Mod1, Tiffmat, missing="NAN")
+confusionMatrix(Preds1, Classdf$ClassNum)
 
 ```
 
