@@ -30,7 +30,7 @@ http://web.pdx.edu/~emch/ip1/bandcombinations.html
 
 
 ```{r}
-packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071", "snow", "RColorBrewer")
+packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071", "snow", "RColorBrewer", "rgeos", "xtable", "RStoolbox")
 
 #This piece of code will check to see if the packages you want to load are installed if they aren't it will install them
 new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
@@ -49,12 +49,52 @@ if(mode == "cloud"){
   palmbase <-"~/Dropbox/PalmOil"
   TIFF <- "~/Dropbox/PalmOil/Tiff"
   forestshapefile <- "~/Dropbox/PalmOil/ForestShape"
+  palmconc<-"~/Dropbox/PalmOil/palmconc"
 } else {
   palmbase <-"~/Dropbox/PalmOil"
   TIFF <- "C:/Users/Gail/Desktop/TiffTest"
   }
 
 setwd(palmbase)
+```
+
+
+Function used later in the analysis
+```{r}
+#Compresses a data frame to the mean value of a square set of cells in a dataframe
+#df = A datframe
+#merge = the number of cell in the x and y direction to merge
+#Requires dplyr 
+
+CompressDf <-function(df,merge = 5){
+  
+  print("Compressing data along rows")
+  
+  totrows <-nrow(df)
+  remainder <- merge-(totrows %%merge)
+  numgroups <-(totrows +remainder)/merge
+  
+  #rearrange dataframe columns and aggreagte into the predefined groups of size merge
+  #rows and columns are first ordered by similarity
+  test <- df%>% as.data.frame %>%
+    mutate(rowID =rep(1:numgroups,each=merge)[1:totrows]) %>%
+    group_by(rowID) %>% summarise_all(funs(mean)) %>%
+    select(-rowID) #add in -rows again is the rows data is commented back in
+  
+  print("Compressing data along Columns")
+  #allows the grouping to be flexible in the case that the dataframe changes size
+  totcols <-ncol(test)
+  remainder <- merge-(totcols %%merge)
+  numgroups <-(totcols +remainder)/merge
+  
+  
+  #aggregate again transposing the data frame and aggregating by the smart meters
+  test <- t(test) %>% data.frame %>% 
+    mutate(rowID =rep(1:numgroups,each=merge)[1:totcols]) %>%
+    group_by(rowID) %>% summarise_all(funs(mean)) %>%select(-rowID) %>%
+    t %>% data.frame %>% mutate( rowID = 1:nrow(.)) 
+  
+}
 ```
 
 
@@ -92,7 +132,18 @@ LSI<- lapply(files[filewant], brick)%>% stack  %>%
 ImportBrick
 ```{r}
 
-plotRGB(LSI,r=4,g=3,b=2, scale=800, stretch = "Lin")
+
+setwd(palmbase)
+ ggRGB(LSI, r=4,g=3,b=2) + labs(title = "The original satellite image shown in natural colours") +
+             theme(axis.title= element_blank(),
+                axis.text = element_blank(),
+                axis.ticks = element_blank(),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                legend.position = "right",
+                legend.key = element_blank(),
+                plot.title = element_text(hjust = 0.5))
+ggsave("BaseImage.png")
 
 #img <- brick("FakeForest1.tif")
 
@@ -110,6 +161,8 @@ plot(trainData)
 
 ```{r}
 
+
+if (!file.exists(file.path(palmbase, "TiffFrame.RDS"))){
 TiffFrame <- CreateTiffFrame(LSI, trainData, "Class")
 
 TiffFrame <-TiffFrame %>% mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
@@ -117,6 +170,13 @@ TiffFrame <-TiffFrame %>% mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1),
                                   ForCrop2 = B7/B2,
                                   WatLan1 = B6/B7,
                                   WatLan2= (B4+B5)/(B6*2))
+ setwd(palmbase)
+ saveRDS(TiffFrame,"TiffFrame.RDS")
+ } else {
+
+    TiffFrame <- readRDS("TiffFrame.RDS")
+   
+ }
 
 Classdf <- data.frame(Class = TiffFrame$Class) %>% 
   mutate(ClassNum =  Class %>% 
@@ -130,6 +190,7 @@ set.seed(1987)
 
  Tiffmat<-as.matrix(select(TiffFrame, -Class))
 
+if (!file.exists(file.path(palmbase, "Mod1.rds"))){
  Mod1 <- xgboost(Tiffmat[trainvect,],
         label = Classdf$ClassNum[trainvect],
                     max.depth=6,
@@ -141,13 +202,19 @@ set.seed(1987)
                     missing="NAN")
 
 
-Preds1 <- predict(Mod1, Tiffmat[-trainvect,], missing="NAN")
-confusionMatrix(Preds1, Classdf$ClassNum[-trainvect])
 
 #save model as it takes a long time to build
 setwd(palmbase)
-#Mod1 <- readRDS("Mod1.rds")
+
 saveRDS(Mod1, "Mod1.rds") 
+} else {
+
+  Mod1 <-  readRDS(file.path(palmbase, "Mod1.rds"))
+}
+
+Preds1 <- predict(Mod1, Tiffmat[-trainvect,], missing="NAN")
+confusionMatrix(Preds1, Classdf$ClassNum[-trainvect])
+
  
 #  Tiffmat<-as.matrix(select(TiffFrame, -Class))
 # Mod1 <- xgboost(Tiffmat[trainvect,],
@@ -176,43 +243,60 @@ ggsave("VarImp.png")
 
 ```{r}
 
-#Convert entire image
-imgmat <-as.data.frame(LSI) %>% mutate_all(as.numeric) %>% 
-  mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
-      ForCrop1 = B3/B2,
-      ForCrop2 = B7/B2,
-      WatLan1 = B6/B7,
-      WatLan2= (B4+B5)/(B6*2)) %>% 
-  as.matrix()
 
-#predict class of whole image
-preds <- predict(Mod1, imgmat, missing = "NAN")
+if(!file.exists(file.path(palmbase,"predmat.RDS"))){
+
+    #Convert entire image
+    imgmat <-as.data.frame(LSI) %>% mutate_all(as.numeric) %>% 
+      mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
+          ForCrop1 = B3/B2,
+          ForCrop2 = B7/B2,
+          WatLan1 = B6/B7,
+          WatLan2= (B4+B5)/(B6*2)) %>% 
+      as.matrix()
+    
+    #predict class of whole image
+    preds <- predict(Mod1, imgmat, missing = "NAN")
+    
+    
+    #Change the prediction vector back into a raster image.
+    predmat <- matrix(preds, nrow= 7771, byrow = TRUE) #>0.5
+    saveRDS(predmat, "predmat.RDS")
+}else{
+  setwd(palmbase)
+  predmat <- readRDS("predmat.RDS")}
 
 
-#Change the prediction vector back into a raster image.
-predmat <- matrix(preds, nrow= 7771, byrow = TRUE) #>0.5
-predrast <- raster(predmat)
-extent(predrast) <- extent(LSI)
 
 
+CompressedMap <- lapply(0:4, function(n){
+  print(n)
+  ((predmat==n)*1) %>% CompressDf(., merge=10) %>%
+    gather(.,key = "columnID", value =Percentvalid, -rowID )%>%
+    mutate(columnID = sub("X","", columnID) %>% as.integer) 
+})
 
-plot(predrast, breaks = c(-1,0,1,2,3,4), col = c("white", "black","forestgreen", "green", "blue") )
-df<- rasterToPoints(predrast)
-df <- data.frame(df)
-names(df)<- c("Longitude", "Latitude", "Type")
 
-ggplot(df, aes(y=Latitude, x=Longitude, fill=Type)) +
-geom_raster()
-+theme_bw() +
-coord_equal() +theme(axis.title.x = element_text(size=16),
-axis.title.y = element_text(size=16, angle=90),
-axis.text.x = element_text(size=14),
-axis.text.y = element_text(size=14),
-panel.grid.major = element_blank(),
-panel.grid.minor = element_blank(),
-legend.position = "right",
-legend.key = element_blank()
-)
+CompressedMap <-left_join(CompressedMap[[1]],CompressedMap[[2]], by =c("rowID", "columnID")) %>%
+  left_join(.,CompressedMap[[3]], by =c("rowID", "columnID")) %>%
+  left_join(.,CompressedMap[[4]], by =c("rowID", "columnID")) %>%
+  left_join(.,CompressedMap[[5]], by =c("rowID", "columnID")) %>% 
+  setNames(c("rowID", "columnID", "Cloud", "Empty", "Forest", "Plantation", "Water" )) %>%
+  mutate(Type = c("Cloud", "Empty", "Forest", "Plantation", "Water" )[max.col(.[,3:7])])
+
+setwd(palmbase)
+ggplot(CompressedMap, aes(y=-rowID, x= columnID, fill = Type )) +
+    geom_raster() +scale_fill_manual(values = c("white","black", "darkgreen", "green", "blue"))+#theme_bw() +
+    coord_equal() + labs(title = "Results of classifying the satellite image") + 
+    theme(axis.title= element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right",
+    legend.key = element_blank(),
+    plot.title = element_text(hjust = 0.5)) 
+  ggsave("ModMap.png")
 
 ```
 
@@ -224,48 +308,114 @@ extract  useful stats from the matrix
 . 1km^2 is equal to 100 hactares
 ```{r}
 px <- sapply(0:4, function(n) sum(predmat ==n))
+ppt <-780 #price per tonne
 
 imagedata <- ClassCodes %>% arrange(ClassNum) %>% mutate(pixels = px, km2 = round(pixels * 9e-5))
 imagedata
 
 #Tonnes of Palm Oil Equivalent
 
-TonnesOil<- imagedata$km2[imagedata$Class== "Plantation"] * 3.69*100
+TonnesOil <- imagedata$km2[imagedata$Class== "Plantation"] * 3.69*100
 #value of oil in USD
 
-TonnesOil*692/1e6
+TonnesOil*ppt/1e6
 
 ```
 
 
 ```{r}
-setwd(file.path(palmbase, "DummyLegal"))
+#load concessions
+setwd(palmconc)
+IndoPalmConc <- shapefile("Indonesia_oil_palm_concessions.shp")
+IndoPalmConc <- spTransform(IndoPalmConc,CRS=crs(LSI))
 
-Legalshape <- shapefile("DummyLegal.shp")
-test <- as.matrix(Legalshape)
+predrast <- raster(predmat)
+extent(predrast) <- extent(LSI)
 
-plot(Legalshape)
+#This calculation takes  a long time if you don't need to do it multiple times it's better
+if(!file.exists(file.path(palmbase,"LegalPlantationMask.rds"))){
+
+  maskrast<- matrix(1:length(predmat), nrow = 7771) %>% raster
+  
+  extent(maskrast) <- extent(LSI)
+
+  LegalPlantationMask <- extract(maskrast, IndoPalmConc) %>% 
+  lapply(., as.data.frame) %>% bind_rows
+
+  LegalPlantationMask <- LegalPlantationMask[,1] %>% as.integer
+  
+  setwd(palmbase)
+
+  saveRDS(LegalPlantationMask, "LegalPlantationMask.rds")
+}else{
+LegalPlantationMask <- readRDS("LegalPlantationMask.rds")
+  }
 
 
-dataSet <- extract(LSI, trainData ) %>% lapply(., as.data.frame) %>% bind_rows
+maskrast<- matrix(1, nrow = 7771, ncol =7611 ) 
+maskrast[LegalPlantationMask] <- 0
 
-LegalProd <- ClassCodes %>% arrange(ClassNum) %>% 
-  mutate(pixels = sapply(0:4, function(n) sum(dataSet ==n)), 
-         km2 = round(pixels * 9e-5))
+predmat2 <- predmat
 
-names(Legalshape)[2] <- "Class"
-test <- CreateTiffFrame(predrast, Legalshape, "LP")
+#create a logical mask
+predmat2 <- predmat2 * maskrast
 
+#class everything that is platnation but outside the legal zones as 2 everything else = 0
+predmat2 <- (predmat2 == 3)*2
+
+#add the two matrices together so that a 6 is the level for conflict palm
+predmat2 <- predmat + predmat2
+
+#compress the new matrix
+CompressedMap <- lapply(0:5, function(n){
+  print(n)
+  ((predmat2==n)*1) %>% CompressDf(., merge=10) %>%
+    gather(.,key = "columnID", value =Percentvalid, -rowID )%>%
+    mutate(columnID = sub("X","", columnID) %>% as.integer) 
+})
+
+#organise creating the conflict level
+CompressedMap2 <-left_join(CompressedMap[[1]],CompressedMap[[2]], by =c("rowID", "columnID")) %>%
+  left_join(.,CompressedMap[[3]], by =c("rowID", "columnID")) %>%
+  left_join(.,CompressedMap[[4]], by =c("rowID", "columnID")) %>%
+  left_join(.,CompressedMap[[5]], by =c("rowID", "columnID")) %>% 
+  left_join(.,CompressedMap[[6]], by =c("rowID", "columnID")) %>%
+  setNames(c("rowID", "columnID", "Cloud", "Empty", "Forest", "Plantation", "Water","Conlfict" )) %>%
+  mutate(Type = c("Cloud", "Empty", "Forest", "Plantation", "Water", "Conflict" )[max.col(.[,3:8])] %>%
+           as.factor %>% fct_relevel("Empty") %>% fct_relevel("Conflict", after = Inf))
+
+#plot with the conflict level included
+ggplot(CompressedMap2, aes(y=-rowID, x= columnID, fill = Type )) +
+    geom_raster() +scale_fill_manual(values = c("black","white", "darkgreen", "green", "blue", "red"))+#theme_bw() +
+    coord_equal() + labs(title = "Areas of conflict palm") + 
+    theme(axis.title= element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right",
+    legend.key = element_blank(),
+    plot.title = element_text(hjust = 0.5)) 
+
+TypeSplit <- table(unlist(predmat2)) %>% test %>% as.data.frame %>% select(-Var1) %>% rename(Pixels = Freq) %>%
+  mutate(Type = c( "Empty", "Cloud", "Forest", "Plantation", "Water", "Conflict Palm"),
+         `Km^2`= round(Pixels *9e-5),
+         `Percent of Total` = round(Km2/sum(Km2)*100)) %>% 
+  filter(Type != "Empty") %>% select(-Pixels)
+
+output<- data_frame(`Percent Conflict` = round(TypeSplit[5,2]/(TypeSplit[3,2]+TypeSplit[5,2])*100),
+            `Tonnes Production` = (TypeSplit[3,2]+TypeSplit[5,2])*3.69*100,
+            `Tonnes Conflict` = (TypeSplit[5,2])*3.69*100,
+            `Value of Conflict (MUSD)` = round((TypeSplit[5,2])*3.69*100 * ppt/1e6))
+
+
+TypeSplit %>% stargazer(., type="html", summary = FALSE)
+
+output %>% gather() %>% stargazer(., type="text", summary = FALSE)
+
+
+TypeSplit %>% kable
 ```
 
 
-Alternative Method of working out what is legal and what isn't
-
-```{r}
-
-
-Preds1 <- predict(Mod1, Tiffmat, missing="NAN")
-confusionMatrix(Preds1, Classdf$ClassNum)
-
-```
 
