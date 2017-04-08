@@ -109,10 +109,10 @@ ReflectCorrect <-function(df, Band, meta ){
   MultPart  <- meta$L1_METADATA_FILE[grep(paste0("REFLECTANCE_MULT_BAND_",Band),meta$GROUP)] %>% as.numeric
   AddPart<- meta$L1_METADATA_FILE[grep(paste0("REFLECTANCE_ADD_BAND_",Band),meta$GROUP)]%>% as.numeric
   
-  #Sun elevationhas to be converted to radians
+  #Sun elevations to be converted to radians
   SunElev <- meta$L1_METADATA_FILE[grep("SUN_ELEVATION",meta$GROUP)] %>% as.numeric *(2*pi/360)
   RefCor <- MultPart*Var + AddPart
-  #RefCor <- RefCor/sin(SunElev)
+  RefCor <- RefCor/sin(SunElev)
   return(RefCor)
   }
 
@@ -121,31 +121,29 @@ CorrectCreate <- function(df, meta){
   
   #Corrects for the reflectance of the variables using the metadata
   
-df2 <- df %>% select(-Class,-B10,-B11)
+  df2 <- df %>% select(-Class,-B10,-B11)
 
-    df <- lapply(grep("^B",names(df2)), function(n){
+  df <- lapply(grep("^B",names(df2)), function(n){
     print(n)
       data_frame(Var = (ReflectCorrect(df2, n, meta) )) %>%
-        setNames(paste0("B",n))
+        setNames(paste0("CB",n))
     }
-  ) %>%  bind_cols %>% bind_cols(., select(df, B10, B11, Class)
-                                 )
+  ) %>%  bind_cols %>% bind_cols(., df)
 
+#  df<- df %>% setNames(ifelse(grepl("^B",names(df)), paste0("C",names(df)) ,names(df)))  
+    
   #Creates the new variables from the corrected variables
-  df <- df %>% mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
-                                  ForCrop1 = B3/B2,
-                                  ForCrop2 = B7/B2,
-                                  WatLan1 = B6/B7,
-                                  WatLan2= (B4+B5)/(B6*2),
-                                  SAVI = ((B5-B4)/(B5+B4+0.5))*(1+0.5),
-                                  Tassel_B = 0.3029*B2 +0.2786*B3 + 0.4733*B4+0.508*B6+0.1872*B7,
-                                  Tassel_G = -0.2941*B2 -0.243*B3-0.5424*B4+0.7276*B5+0.0713*B6-0.1608*B7,
-                                  Tassel_W = 0.1511*B2+0.1973*B3+0.3283*B4+0.3407*B5-0.7117*B6-0.4559*B7,
-                                  EVI = 2.5*(B5-B4)/(B5+6*B4-7.5*B2+1))
+  df <- df %>% mutate(TNDVI = sqrt(((CB5-CB4)/(CB5+CB4))+1), 
+                                  ForCrop1 = CB3/CB2,
+                                  ForCrop2 = CB7/CB2,
+                                  WatLan1 = CB6/CB7,
+                                  WatLan2= (CB4+CB5)/(CB6*2),
+                                  SAVI = ((CB5-CB4)/(CB5+CB4+0.5))*(1+0.5),
+                                  Tassel_B = 0.3029*CB2 +0.2786*CB3 + 0.4733*CB4+0.508*CB6+0.1872*CB7,
+                                  Tassel_G = -0.2941*CB2 -0.243*CB3-0.5424*CB4+0.7276*CB5+0.0713*CB6-0.1608*CB7,
+                                  Tassel_W = 0.1511*CB2+0.1973*CB3+0.3283*CB4+0.3407*CB5-0.7117*CB6-0.4559*CB7,
+                                  EVI = 2.5*(CB5-CB4)/(CB5+6*CB4-7.5*CB2+1))
 }
-
-
-df <- grep("^B",names(df2) %>% map_df(df2,., ReflectCorrect(df2, ., meta) ))
 
 ```
 
@@ -296,7 +294,7 @@ set.seed(1987)
  #Mod2 includes SAVI and TASSEL and EVI The model couldn't differentiate water for some reason
  #Mod3 Extra water in training data
  
- mod <- "Mod3.rds"
+ mod <- "Mod4.rds"
  
 if (!file.exists(file.path(palmbase, mod))){
  Mod1 <- xgboost(Tiffmat[trainvect,],
@@ -354,7 +352,7 @@ SplitByRow <- function(df, rowspergroup, fun,...){
 
 ProcessPredict <- function(df, meta, Mod) {
     df %>% mutate_all(as.numeric) %>% mutate(Class = NA) %>%
-      #CorrectCreate(., meta) %>% 
+      CorrectCreate(., meta) %>% 
       select(-Class) %>%
       as.matrix %>%
       predict(Mod, ., missing = 'NAN')
@@ -362,7 +360,7 @@ ProcessPredict <- function(df, meta, Mod) {
   
 fun <- "ProcessPredict(.,meta, Mod1)"
 
-predmatfile <- "predmat.RDS"
+predmatfile <- "predmataLL2.RDS"
 
 if(!file.exists(file.path(palmbase, predmatfile))){
 
