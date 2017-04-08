@@ -30,7 +30,7 @@ http://web.pdx.edu/~emch/ip1/bandcombinations.html
 
 
 ```{r}
-packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071", "snow", "RColorBrewer", "rgeos", "xtable", "RStoolbox")
+packages <- c("tidyverse", "rgdal", "raster", "gridExtra", "caret","randomForest","xgboost", "e1071", "snow", "RColorBrewer", "rgeos", "xtable", "RStoolbox", "forcats")
 
 #This piece of code will check to see if the packages you want to load are installed if they aren't it will install them
 new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
@@ -98,6 +98,58 @@ CompressDf <-function(df,merge = 5){
 ```
 
 
+```{r CorrectCreate}
+#This function correct for reflectance and creates the new variables.
+
+
+
+ReflectCorrect <-function(df, Band, meta ){
+  Var <- eval(parse(text = paste0("df$B",Band)))
+  #The names cannot have whitespace which may happen on some loading.
+  MultPart  <- meta$L1_METADATA_FILE[grep(paste0("REFLECTANCE_MULT_BAND_",Band),meta$GROUP)] %>% as.numeric
+  AddPart<- meta$L1_METADATA_FILE[grep(paste0("REFLECTANCE_ADD_BAND_",Band),meta$GROUP)]%>% as.numeric
+  
+  #Sun elevationhas to be converted to radians
+  SunElev <- meta$L1_METADATA_FILE[grep("SUN_ELEVATION",meta$GROUP)] %>% as.numeric *(2*pi/360)
+  RefCor <- MultPart*Var + AddPart
+  #RefCor <- RefCor/sin(SunElev)
+  return(RefCor)
+  }
+
+
+CorrectCreate <- function(df, meta){
+  
+  #Corrects for the reflectance of the variables using the metadata
+  
+df2 <- df %>% select(-Class,-B10,-B11)
+
+    df <- lapply(grep("^B",names(df2)), function(n){
+    print(n)
+      data_frame(Var = (ReflectCorrect(df2, n, meta) )) %>%
+        setNames(paste0("B",n))
+    }
+  ) %>%  bind_cols %>% bind_cols(., select(df, B10, B11, Class)
+                                 )
+
+  #Creates the new variables from the corrected variables
+  df <- df %>% mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
+                                  ForCrop1 = B3/B2,
+                                  ForCrop2 = B7/B2,
+                                  WatLan1 = B6/B7,
+                                  WatLan2= (B4+B5)/(B6*2),
+                                  SAVI = ((B5-B4)/(B5+B4+0.5))*(1+0.5),
+                                  Tassel_B = 0.3029*B2 +0.2786*B3 + 0.4733*B4+0.508*B6+0.1872*B7,
+                                  Tassel_G = -0.2941*B2 -0.243*B3-0.5424*B4+0.7276*B5+0.0713*B6-0.1608*B7,
+                                  Tassel_W = 0.1511*B2+0.1973*B3+0.3283*B4+0.3407*B5-0.7117*B6-0.4559*B7,
+                                  EVI = 2.5*(B5-B4)/(B5+6*B4-7.5*B2+1))
+}
+
+
+df <- grep("^B",names(df2) %>% map_df(df2,., ReflectCorrect(df2, ., meta) ))
+
+```
+
+
 ```{r}
 CreateTiffFrame <- function(img, trainData, responseCol){
  #This function outputs a data frame with a column for the pixel data and a column for the output variable, for a stacked raster it will include a column for each band
@@ -112,6 +164,43 @@ TiffFrame <- lapply(1:length(unique(trainData[[responseCol]])), function(i){
 ```
 
 
+```{r}
+CompressAndPlot<- function(df, merge = 10, Catags, CatColours){
+
+
+df2 <- 0:(length(Catags)) %>% map(~{
+  #finds the probability of each class per pixel and assembles into a dataframe
+  n <-. 
+  ((df==(n))*1) %>% CompressDf(., merge) %>%
+    gather(.,key = "columnID", value =Percentvalid, -rowID )%>%
+    mutate(columnID = sub("X","", columnID) %>% as.integer) %>% 
+    data.frame %>% setNames(c(names(.)[1:2], paste0("Type", n)))
+  }
+  ) %>% Reduce(function(dtf1,dtf2) left_join(dtf1,dtf2,by=c("columnID", "rowID")), .) %>% #turn list to dataframe
+  mutate(Type = Catags[max.col(.[3:ncol(.)])], #find most prevelant type
+         Type = Type %>% as.factor %>% 
+           fct_relevel("Empty"),
+         Type = fct_relevel(Type, "Conflict", after = Inf), Type) #re-order factor levels
+  
+
+
+#plot with the conflict level included
+ggplot(df2, aes(y=-rowID, x= columnID, fill = Type )) +
+    geom_raster() +scale_fill_manual(values = CatColours)+#theme_bw() +
+    coord_equal() + labs(title = "Areas of conflict palm") + 
+    theme(axis.title= element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right",
+    legend.key = element_blank(),
+    plot.title = element_text(hjust = 0.5)) 
+}
+
+```
+
+
 untar data
 ```{r}
 setwd(TIFF)
@@ -121,18 +210,19 @@ files <- list.files(pattern =".TIF")
 
 #finds the correct bands and orders them correctly
 filewant <- files %>% sub("LC81190622016273LGN00_B", "", .) %>% 
-  sub(".TIF", "", .) %>% as.numeric %>% base::match(1:7, .)
+  sub(".TIF", "", .) %>% as.numeric %>% base::match(c(1:7,10,11), .)
 
 LSI<- lapply(files[filewant], brick)%>% stack  %>%
   setNames(sub(".+_", "", names(.))) 
+
+meta <- read_delim("LC81190622016273LGN00_MTL.txt"    , delim = "=") %>% 
+  setNames(trimws(names(.)))
 ```
 
 
 
-ImportBrick
-```{r}
 
-
+```{r PlotMap}
 setwd(palmbase)
  ggRGB(LSI, r=4,g=3,b=2) + labs(title = "The original satellite image shown in natural colours") +
              theme(axis.title= element_blank(),
@@ -144,44 +234,55 @@ setwd(palmbase)
                 legend.key = element_blank(),
                 plot.title = element_text(hjust = 0.5))
 ggsave("BaseImage.png")
-
-#img <- brick("FakeForest1.tif")
-
-setwd(forestshapefile)
-trainData <- shapefile("ForestLC8119.shp")
-#trainData <- shapefile("FakeFores1_shape.shp")
-
-#Dropbox wasn't updating in AWS so I had to manually filter out this NA
-#trainData <- subset(trainData, trainData$Class %in% unique(trainData$Class)[-6])
+```
 
 
-plot(trainData)
+
+```{r ExtractTrainingData}
+
+
+#setwd(forestshapefile)
+#trainData <- shapefile("ForestLC8119.shp")
+
+setwd(palmbase)
+trainData <- shapefile("ClassShapes050417.shp")
+
+
+#Tiff2 has correction
+#Tiff3 has no correction
+
+if (!file.exists(file.path(palmbase, "TiffFrameRaw.RDS"))){
+TiffFrame <- CreateTiffFrame(LSI, trainData, "Class")
+
+ saveRDS(TiffFrame,"TiffFrameRaw.RDS")
+ } else {
+  setwd(palmbase)
+    TiffFrame <- readRDS("TiffFrameRaw.RDS")
+   
+ }
+#tassel and savi from here
+#http://grindgis.com/blog/vegetation-indices-arcgis#1
 
 ```
 
-```{r}
+
+```{r Process}
+
+TiffFrame <- TiffFrame %>% CorrectCreate(., meta)
 
 
-if (!file.exists(file.path(palmbase, "TiffFrame.RDS"))){
-TiffFrame <- CreateTiffFrame(LSI, trainData, "Class")
+```
 
-TiffFrame <-TiffFrame %>% mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
-                                  ForCrop1 = B3/B2,
-                                  ForCrop2 = B7/B2,
-                                  WatLan1 = B6/B7,
-                                  WatLan2= (B4+B5)/(B6*2))
- setwd(palmbase)
- saveRDS(TiffFrame,"TiffFrame.RDS")
- } else {
 
-    TiffFrame <- readRDS("TiffFrame.RDS")
-   
- }
+
+```{r CreateModel}
+
+TiffFrame <- TiffFrame %>% filter(Class!="Urban") #%>% select(-SAVI, -B10,-B11,-Tassel_B,-Tassel_G,-Tassel_W,-EVI)
 
 Classdf <- data.frame(Class = TiffFrame$Class) %>% 
   mutate(ClassNum =  Class %>% 
            as.factor %>% 
-           as.numeric -1) #Classes have to start at 0
+           as.numeric -1)  #Classes have to start at 0
 
 ClassCodes <- unique(Classdf)
 
@@ -190,53 +291,48 @@ set.seed(1987)
 
  Tiffmat<-as.matrix(select(TiffFrame, -Class))
 
-if (!file.exists(file.path(palmbase, "Mod1.rds"))){
+ #modelversion 
+ #Mod1 was the original model 
+ #Mod2 includes SAVI and TASSEL and EVI The model couldn't differentiate water for some reason
+ #Mod3 Extra water in training data
+ 
+ mod <- "Mod3.rds"
+ 
+if (!file.exists(file.path(palmbase, mod))){
  Mod1 <- xgboost(Tiffmat[trainvect,],
         label = Classdf$ClassNum[trainvect],
                     max.depth=6,
-                    eta = 0.10,
-                    nround = 200,
+                    eta = 0.30,
+                    nround = 50,
                     objective = "multi:softmax",
-                    num_class = 5,
+                    num_class = length(unique(Classdf$ClassNum)),
                     eval_metric ="merror",
                     missing="NAN")
-
-
 
 #save model as it takes a long time to build
 setwd(palmbase)
 
-saveRDS(Mod1, "Mod1.rds") 
+saveRDS(Mod1, mod) 
 } else {
 
-  Mod1 <-  readRDS(file.path(palmbase, "Mod1.rds"))
+  Mod1 <-  readRDS(file.path(palmbase, mod))
 }
 
 Preds1 <- predict(Mod1, Tiffmat[-trainvect,], missing="NAN")
 confusionMatrix(Preds1, Classdf$ClassNum[-trainvect])
 
- 
-#  Tiffmat<-as.matrix(select(TiffFrame, -Class))
-# Mod1 <- xgboost(Tiffmat[trainvect,],
-#         label = TiffFrame$Class[trainvect]=="Plantation",
-#         max.depth=5, 
-#                     eta=0.10,
-#                     nround = 100, 
-#                     objective = "binary:logistic")
-# 
-# 
-# Preds1 <- predict(Mod1, Tiffmat[-trainvect,])
-# confusionMatrix(Preds1>0.5, TiffFrame$Class[-trainvect]=="Plantation")
-
-
 importance <- xgb.importance(feature_names = colnames(Tiffmat), model = Mod1)
-barplot(importance$Gain)
+
+#these are no longer needed and are quite large so should be removed
+rm(Tiffmat)
+rm(TiffFrame)
+gc()
 
 setwd(palmbase)
 importance %>%  mutate(Feature = factor(Feature, levels = Feature[order(-importance$Gain)])) %>% 
   ggplot(., aes(x = Feature, y = Gain)) +geom_bar(stat="identity") +
   ggtitle("Variable Importance for classification\nof rural Indonesia using Landsat 8 Images")
-ggsave("VarImp.png")
+#ggsave("VarImp.png")
 ```
 
 
@@ -244,59 +340,62 @@ ggsave("VarImp.png")
 ```{r}
 
 
-if(!file.exists(file.path(palmbase,"predmat.RDS"))){
+SplitByRow <- function(df, rowspergroup, fun,...){
+  totrows <- nrow(df)
+  remainder <- rowspergroup - (totrows %%rowspergroup)
+  numgroups <- (totrows +remainder)/rowspergroup
+
+  df2 <- df %>% mutate(rowID =rep(1:numgroups,each=rowspergroup)[1:totrows]) %>%
+    split(.$rowID) %>%
+    map(~eval(parse(text=fun)))
+    
+  
+}
+
+ProcessPredict <- function(df, meta, Mod) {
+    df %>% mutate_all(as.numeric) %>% mutate(Class = NA) %>%
+      #CorrectCreate(., meta) %>% 
+      select(-Class) %>%
+      as.matrix %>%
+      predict(Mod, ., missing = 'NAN')
+    }
+  
+fun <- "ProcessPredict(.,meta, Mod1)"
+
+predmatfile <- "predmat.RDS"
+
+if(!file.exists(file.path(palmbase, predmatfile))){
 
     #Convert entire image
-    imgmat <-as.data.frame(LSI) %>% mutate_all(as.numeric) %>% 
-      mutate(TNDVI = sqrt(((B5-B4)/(B5+B4))+1), 
-          ForCrop1 = B3/B2,
-          ForCrop2 = B7/B2,
-          WatLan1 = B6/B7,
-          WatLan2= (B4+B5)/(B6*2)) %>% 
-      as.matrix()
+    print("Converting Image")
+    predmat <-as.data.frame(LSI) 
     
     #predict class of whole image
-    preds <- predict(Mod1, imgmat, missing = "NAN")
+    print("Splitting by rows")
+    predmat <-  SplitByRow(predmat, nrow(predmat)/100, fun) 
     
+    print("Converting to integer vector")
+    predmat<- predmat %>% map(as.integer) %>%  unlist(use.names=FALSE)
     
     #Change the prediction vector back into a raster image.
-    predmat <- matrix(preds, nrow= 7771, byrow = TRUE) #>0.5
-    saveRDS(predmat, "predmat.RDS")
-}else{
-  setwd(palmbase)
-  predmat <- readRDS("predmat.RDS")}
+    print("converting to matrix")
+    predmat <- matrix(predmat, nrow= 7771, byrow = TRUE) %>% as.data.frame
+    saveRDS(predmat, predmatfile)
+    
+  }else{
+    setwd(palmbase)
+    predmat <- readRDS(predmatfile)
+  }
 
+predmat <- as.data.frame(predmat)
 
+Catags <-c("Cloud", "Empty", "Forest", "Plantation", "Water" )
+CatColours <- c("black", "white", "darkgreen", "green", "blue")
 
-
-CompressedMap <- lapply(0:4, function(n){
-  print(n)
-  ((predmat==n)*1) %>% CompressDf(., merge=10) %>%
-    gather(.,key = "columnID", value =Percentvalid, -rowID )%>%
-    mutate(columnID = sub("X","", columnID) %>% as.integer) 
-})
-
-
-CompressedMap <-left_join(CompressedMap[[1]],CompressedMap[[2]], by =c("rowID", "columnID")) %>%
-  left_join(.,CompressedMap[[3]], by =c("rowID", "columnID")) %>%
-  left_join(.,CompressedMap[[4]], by =c("rowID", "columnID")) %>%
-  left_join(.,CompressedMap[[5]], by =c("rowID", "columnID")) %>% 
-  setNames(c("rowID", "columnID", "Cloud", "Empty", "Forest", "Plantation", "Water" )) %>%
-  mutate(Type = c("Cloud", "Empty", "Forest", "Plantation", "Water" )[max.col(.[,3:7])])
-
-setwd(palmbase)
-ggplot(CompressedMap, aes(y=-rowID, x= columnID, fill = Type )) +
-    geom_raster() +scale_fill_manual(values = c("white","black", "darkgreen", "green", "blue"))+#theme_bw() +
-    coord_equal() + labs(title = "Results of classifying the satellite image") + 
-    theme(axis.title= element_blank(),
-    axis.ticks = element_blank(),
-    axis.text = element_blank(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    legend.position = "right",
-    legend.key = element_blank(),
-    plot.title = element_text(hjust = 0.5)) 
-  ggsave("ModMap.png")
+z <- CompressAndPlot(predmat, 10, 
+                c("Cloud", "Empty", "Forest", "Plantation", "Water" ),
+                c("black", "white", "darkgreen", "green", "blue"))
+ # ggsave("ModMap.png")
 
 ```
 
@@ -323,7 +422,7 @@ TonnesOil*ppt/1e6
 ```
 
 
-```{r}
+```{r IdentifyConlfict}
 #load concessions
 setwd(palmconc)
 IndoPalmConc <- shapefile("Indonesia_oil_palm_concessions.shp")
@@ -348,7 +447,8 @@ if(!file.exists(file.path(palmbase,"LegalPlantationMask.rds"))){
 
   saveRDS(LegalPlantationMask, "LegalPlantationMask.rds")
 }else{
-LegalPlantationMask <- readRDS("LegalPlantationMask.rds")
+    setwd(palmbase)
+  LegalPlantationMask <- readRDS("LegalPlantationMask.rds")
   }
 
 
@@ -365,43 +465,30 @@ predmat2 <- (predmat2 == 3)*2
 
 #add the two matrices together so that a 6 is the level for conflict palm
 predmat2 <- predmat + predmat2
+```
+
+
+```{r PlotConflict}
 
 #compress the new matrix
-CompressedMap <- lapply(0:5, function(n){
-  print(n)
-  ((predmat2==n)*1) %>% CompressDf(., merge=10) %>%
-    gather(.,key = "columnID", value =Percentvalid, -rowID )%>%
-    mutate(columnID = sub("X","", columnID) %>% as.integer) 
-})
 
-#organise creating the conflict level
-CompressedMap2 <-left_join(CompressedMap[[1]],CompressedMap[[2]], by =c("rowID", "columnID")) %>%
-  left_join(.,CompressedMap[[3]], by =c("rowID", "columnID")) %>%
-  left_join(.,CompressedMap[[4]], by =c("rowID", "columnID")) %>%
-  left_join(.,CompressedMap[[5]], by =c("rowID", "columnID")) %>% 
-  left_join(.,CompressedMap[[6]], by =c("rowID", "columnID")) %>%
-  setNames(c("rowID", "columnID", "Cloud", "Empty", "Forest", "Plantation", "Water","Conlfict" )) %>%
-  mutate(Type = c("Cloud", "Empty", "Forest", "Plantation", "Water", "Conflict" )[max.col(.[,3:8])] %>%
-           as.factor %>% fct_relevel("Empty") %>% fct_relevel("Conflict", after = Inf))
+Catags <- c("Cloud", "Empty", "Forest", "Plantation", "Water", "Conflict")
+CatColours <- c("black","white", "darkgreen", "green", "blue", "red")
 
-#plot with the conflict level included
-ggplot(CompressedMap2, aes(y=-rowID, x= columnID, fill = Type )) +
-    geom_raster() +scale_fill_manual(values = c("black","white", "darkgreen", "green", "blue", "red"))+#theme_bw() +
-    coord_equal() + labs(title = "Areas of conflict palm") + 
-    theme(axis.title= element_blank(),
-    axis.ticks = element_blank(),
-    axis.text = element_blank(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    legend.position = "right",
-    legend.key = element_blank(),
-    plot.title = element_text(hjust = 0.5)) 
+z <- CompressAndPlot(predmat2, 10, Catags, CatColours)
 
-TypeSplit <- table(unlist(predmat2)) %>% test %>% as.data.frame %>% select(-Var1) %>% rename(Pixels = Freq) %>%
+```
+
+
+
+```{r OutputTable}
+TypeSplit <- 0:5 %>% map_dbl(~sum(predmat2==.)) %>% data.frame(Pixels=.)  %>%
   mutate(Type = c( "Empty", "Cloud", "Forest", "Plantation", "Water", "Conflict Palm"),
-         `Km^2`= round(Pixels *9e-5),
-         `Percent of Total` = round(Km2/sum(Km2)*100)) %>% 
-  filter(Type != "Empty") %>% select(-Pixels)
+         `Km^2`= round(Pixels *9e-5)
+         ) %>% 
+  filter(Type != "Empty") %>% 
+  select(-Pixels) %>% 
+  mutate(`Percent of Total` = round(`Km^2`/sum(`Km^2`)*100))
 
 output<- data_frame(`Percent Conflict` = round(TypeSplit[5,2]/(TypeSplit[3,2]+TypeSplit[5,2])*100),
             `Tonnes Production` = (TypeSplit[3,2]+TypeSplit[5,2])*3.69*100,
@@ -416,6 +503,4 @@ output %>% gather() %>% stargazer(., type="text", summary = FALSE)
 
 TypeSplit %>% kable
 ```
-
-
 
